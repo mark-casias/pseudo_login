@@ -1,0 +1,14 @@
+name = "Pseudo Login"
+description = "Provides token-based pseudo-login for users"
+core = 7.x
+version = 7.1.x
+package = "Users"
+
+files[] = pseudo_login.module
+files[] = pseudo_login.install
+files[] = pseudo_login.admin.inc
+files[] = pseudo_login.generate.inc
+files[] = pseudo_login.pseudo.inc
+
+dependencies[] = module_info
+dependencies[] = entity

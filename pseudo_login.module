@@ -1,0 +1,605 @@
+<?php
+/**
+ * @file This module provides token-based login for users.  
+ * 
+ * Copyright 2011 New Signature
+ * http://www.newsignature.com
+ *
+ * @author Andrew Marcus
+ * @since Aug 4, 2011
+ */
+
+/**
+ * Implements hook_permission().
+ */
+function pseudo_login_permission() {
+  return array(
+    'generate pseudo-login tokens' => array(
+      'title' => t('Generate pseudo-login tokens for all users'),
+      'restricted' => TRUE,
+    ),
+    'configure pseudo-login forms' => array(
+      'title' => t('Configure pseudo-login forms'),
+      'restricted' => TRUE,
+    ),
+    'post as another user' => array(
+      'title' => t('Submit a form as another user'),
+      'restricted' => TRUE,
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu().
+ */
+function pseudo_login_menu() {
+  $items = array();
+  
+  $items['admin/config/people/pseudo'] = array(
+    'title' => 'Pseudo-Login Forms',
+    'access arguments' => array( 'configure pseudo-login forms' ),   
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('pseudo_login_config_form'),
+    'file' => 'pseudo_login.admin.inc',
+    'type' => MENU_NORMAL_ITEM,
+    'weight' => 20,
+  );
+  
+  $items['user/logout/pseudo'] = array(
+    'title' => 'Logout',
+    'access callback' => TRUE,
+    'page callback' => 'pseudo_login_user_logout',
+    'type' => MENU_CALLBACK,
+  );
+  
+  return $items;
+}
+
+
+/**
+ * Implements hook_boot().
+ * 
+ * If the special user token is present on any page request, do a pseudo-login
+ * and store the user info in a cookie.   We can't use the session since we may
+ * require the same information on a secure page but the initial page request is
+ * not necessarily secure.
+ */
+function pseudo_login_boot() {
+  // Only process the user token if the user is not already logged in.
+  if (empty($GLOBALS['user']->uid)) {
+    
+    $token_key = variable_get('pseudo_login_token', '_u');
+    // If a token was included in the page request, lookup the user.
+    if (!empty($_GET[$token_key])) {
+      $token = $_GET[$token_key];
+      
+      // Lookup the token
+      $q = db_select('users_tokens', 't');
+      $q->innerJoin('users', 'u', 't.uid = u.uid');
+      $uid = $q
+        ->fields('t', array('uid'))
+        ->condition('t.token', $token)
+        ->range(0, 1)
+        ->execute()
+        ->fetchColumn();
+  
+      if ($uid) {
+        // Set a cookie remembering this user and make the user account global.
+        pseudo_login_set_cookie($uid);
+        
+        // Regenerate a new token for this user.
+        pseudo_login_generate_token($uid);
+        
+        watchdog('pseudo_login', 'Logged in %uid with token %token', array(
+          '%uid' => $uid,
+          '%token' => $token,
+        ), WATCHDOG_INFO);
+        
+        return;
+      }
+      else {
+        $match = FALSE;
+      }
+    }
+    // If we previously logged in a user this session, get them again.
+    if (!empty($_COOKIE['pseudo_uid'])) {
+      $cookie = $_COOKIE['pseudo_uid'];
+      
+      $uid = db_select('users', 'u')
+        ->fields('u', array('uid'))
+        ->condition('uid', $cookie)
+        ->execute()
+        ->fetchColumn();
+        
+      if ($uid) {
+        // Add this user to the globals
+        $GLOBALS['pseudo_uid'] = $uid;
+        $match = TRUE;
+      }
+      else {
+        $match = FALSE;
+      }
+    }
+  }
+  if (isset($match) && $match === FALSE) {
+    if (isset($token)) {
+      watchdog('pseudo_login', 'Invalid token %token', array(
+        '%token' => $token,
+      ), WATCHDOG_WARNING);
+    }
+    elseif (isset($cookie)) {
+      watchdog('pseudo_login', 'Invalid cookie %cookie', array(
+        '%cookie' => $cookie,
+      ), WATCHDOG_WARNING);
+    }
+    
+    pseudo_login_unset_cookie();
+  }
+}
+
+/**
+ * Sets a cookie remembering this user and make the user account global.
+ */
+function pseudo_login_set_cookie($account) {
+  if (is_object($account)) {
+    $uid = $account->uid;
+  }
+  else {
+    $uid = (int)$account;
+  }
+  $GLOBALS['pseudo_uid'] = $uid;
+  setcookie('pseudo_uid', $uid, 0, '/');
+}
+
+function pseudo_login_unset_cookie() {
+  unset($GLOBALS['pseudo_uid']);
+  setcookie('pseudo_uid', NULL, time() - 60, '/');
+}
+
+/**
+ * Implements hook_user_login().
+ * 
+ * When a user logs in, delete the pseudo_user.
+ */
+function pseudo_login_user_login(&$edit, $account) {
+  pseudo_login_unset_cookie();
+}
+
+/**
+ * Implements hook_user_logout().
+ * 
+ * When a user logs out, delete the package code if there is one.
+ */
+function pseudo_login_user_logout($account = NULL) {
+  $uid = '';
+  if (!empty($GLOBALS['pseudo_uid'])) {
+    $uid = $GLOBALS['pseudo_uid'];
+  }
+  
+  pseudo_login_unset_cookie();
+  
+  // If this was invoked as a page callback, redirect to the destination
+  if (!isset($account)) {
+    watchdog('pseudo_login', 'Logged out %uid', array( '%uid' => $uid ), WATCHDOG_NOTICE);
+    drupal_goto();
+  }
+}
+
+/**
+ * Gets the current pseudo-logged in user, if applicable.
+ * 
+ * @return object|boolean A user object, or FALSE if no user is logged in.
+ */
+function pseudo_login_get_user() {
+  $user = &drupal_static(__FUNCTION__);
+  
+  if (!isset($user)) {
+    $user = $GLOBALS['user'];
+    
+    // If a real user is not logged in, look for a pseudo user.
+    if (empty($user->uid) && isset($GLOBALS['pseudo_uid'])) {
+      $user = user_load($GLOBALS['pseudo_uid']);
+    }
+    else {
+      // Reload the user account to pull in all fields
+      $user = user_load($user->uid);
+    }
+  }
+  return $user;
+}
+
+/**
+ * Returns true if the given user is the pseudo user.
+ * 
+ * @param object $account The user account to test.
+ */
+function user_is_pseudo($account) {
+  return isset($GLOBALS['pseudo_uid']) && $GLOBALS['pseudo_uid'] == $account->uid;
+}
+
+/**
+ * Implements hook_user_load().
+ * 
+ * @param array $users
+ */
+function pseudo_login_user_load($users) {
+  $rows = db_select('users_tokens', 't')
+    ->fields('t', array('uid', 'token'))
+    ->condition('uid', array_keys($users))
+    ->execute();
+    
+  foreach ($rows as $row) {
+    $users[$row->uid]->pseudo_login_token = $row->token;
+  }
+}
+
+/**
+ * Implements hook_user_insert().
+ */
+function pseudo_login_user_insert(&$edit, $account, $category) {
+  pseudo_login_user_update($edit, $account, $category);
+}
+
+/**
+ * Implements hook_user_update().
+ */
+function pseudo_login_user_update(&$edit, $account, $category) {
+  $token = db_select('users_tokens', 't')
+    ->fields('t', array('token'))
+    ->condition('uid', $account->uid)
+    ->execute()
+    ->fetchColumn();
+    
+  // If this user does not already have a token, create one
+  if (!$token) {
+    $account->pseudo_login_token = pseudo_login_generate_token($account->uid);
+  }
+}
+
+/**
+ * Generates a token for the given user.
+ * 
+ * @param integer $uid The User ID
+ */
+function pseudo_login_generate_token($uid) {
+  // Generate a new unique token.
+  $token = uniqid() . $uid;
+  
+  // Associate the token with the user, replacing the old one if necessary. 
+  db_merge('users_tokens')
+    ->fields(array(
+      'token' => $token,
+      'created' => time(),
+    ))
+    ->key(array(
+      'uid' => $uid,
+    ))
+    ->execute();
+    
+  return $token;
+}
+
+/**
+ * Implements hook_cron().
+ * 
+ * When the cron job runs, creates tokens for any users who don't already have them.
+ */
+function pseudo_login_cron() {
+  $uids = db_select('users', 'u')
+    ->fields('u', array('uid'))
+    ->notExists(db_select('users_tokens', 't')
+      ->fields('t', array('uid'))
+      ->where('t.uid = u.uid')
+    )
+    ->condition('u.uid', 0, '>')
+    ->execute()
+    ->fetchCol();
+    
+  foreach ($uids as $uid) {
+    pseudo_login_generate_token($uid);
+  }
+}
+
+/**
+ * Returns a set of form info, as declared via hook_pseudo_login_form_info() hooks.
+ * These are the forms to which pseudo-login information can be attached.
+ * 
+ * @param string $key Optionally, the form_id of a single form definition to retrieve.
+ *   If this is not provided, all form definitions will be returned.
+ *   
+ * @return array An array of form info, keyed by form_id.  Each item contains:
+ *   - key: The form ID.
+ *   - title: The title of the form, for the admin UI.
+ *   - fieldset_title: The title to display to the user for the user info section.
+ *   - fields: An array of the user fields that need to be populated.  These will
+ *     be mapped to actual fields in the user record.
+ *   - required: An array of the user fields that are required.
+ *     
+ * @see hook_pseudo_login_form_info()
+ */
+function pseudo_login_form_info($key = NULL) {
+  $info = &drupal_static(__FUNCTION__);
+  if (!isset($info)) {
+    $info = module_info_invoke_all('pseudo_login_form_info', array(
+      'title' => '',
+      'fieldset_title' => t('User Information'),
+      'fields' => array(),
+      'required' => array(),
+    ));
+  
+    // Now merge in the values from the database
+    foreach ($info as $form_id => $data) {
+      $db = variable_get("pseudo_login_form_{$form_id}", array( 'fields' => array() ));
+      $info[$form_id] = $db + $data;
+      $info[$form_id]['fields'] = array_merge($data['fields'], $db['fields']);
+    }
+  }
+  
+  if (!empty($key)) {
+    if (isset($info[$key])) {
+      return $info[$key];
+    }
+    return FALSE;
+  }
+  return $info; 
+}
+
+/**
+ * Returns a set of info about the available user fields, as declared via
+ * hook_pseudo_login_fields_info() hooks.
+ * 
+ * @param string $key Optionally, the field name of a single field definition to retrieve.
+ *   If this is not provided, all field definitions will be returned.
+ *   
+ * @return array An array of field info, keyed by field name.  Each item contains:
+ *   - key: The field name.
+ *   - type: The type of object that provides the field (e.g. 'User')
+ *   - title: The title of the field.
+ *   - callbacks: A set of callbacks to render the form elements for this field.
+ *     
+ * @see hook_pseudo_login_form_info()
+ */
+function pseudo_login_fields_info($key = NULL) {
+  return module_info_invoke_all('pseudo_login_fields_info', array(), $key);
+}
+
+/**
+ * Implements hook_hook_info().
+ */
+function pseudo_login_hook_info() {
+  $hooks = array(
+    'pseudo_login_fields_info' => array( 'group' => 'pseudo' ),
+    'pseudo_login_fields_info_alter' => array( 'group' => 'pseudo' ),
+  );
+  
+  return $hooks;
+}
+
+/**
+ * Attaches the configured user fields to the given form.
+ * 
+ * If the user is only pseudo logged in, options will be made available to 
+ * login for real.
+ * 
+ * @param array $form
+ * @param array $form_state
+ * @param string $form_id A form ID, registered via hook_pseudo_login_form_info().
+ */
+function pseudo_login_attach_form(&$form, &$form_state, $form_id) {
+  // Any page that attaches these fields should not be cacheable.
+  // This prevents the form values from being cached.
+  drupal_page_is_cacheable(FALSE);
+  
+  // Lookup the form definition
+  $info = pseudo_login_form_info($form_id);
+  if (!$info) {
+    return;
+  }
+  $fields = pseudo_login_fields_info();
+  
+  if (isset($form_state['user'])) {
+    $account = $form_state['user'];
+  }
+  else {
+    $account = pseudo_login_get_user();
+  }
+  $form_state['user'] = $account;
+  
+  $form['pseudo_login'] = array(
+    '#type' => 'fieldset',
+    '#title' => $info['fieldset_title'],
+    '#tree' => TRUE,
+    '#collapsible' => FALSE,
+    '#id' => 'edit-pseudo-login',
+  );
+  
+  $weight = 0;
+  foreach ($info['fields'] as $field_id => $field_name) {
+    if (isset($fields[$field_name])) {
+      $field = $fields[$field_name];
+      
+      $callback = module_info_get_callback($field, 'form');
+      if ($callback) {
+        $required = in_array($field_id, $info['required']);
+        
+        $element = $callback($field, $form_state, $account, $required);
+        if ($element) {
+          $element += array(
+            '#field_info' => $field,
+            '#weight' => $weight++,
+          );
+          
+          // Allow other modules to modify the field element.
+          drupal_alter(array(
+            'pseudo_login_attach_form_field',
+            "pseudo_login_attach_form_field_{$field_name}"
+          ), $element, $form_state, $form_id);
+          
+          $form['pseudo_login'][$field_id] = $element;
+        }
+      }
+    }
+  }
+  
+  // Allow other modules to modify the form at this point.
+  drupal_alter('pseudo_login_attach_form', $form, $form_state, $form_id);
+}
+
+/**
+ * Attaches the configured user fields to the given form.
+ * 
+ * If the user is only pseudo logged in, options will be made available to 
+ * login for real.
+ * 
+ * @param array $form
+ * @param array $form_state
+ * @param string $form_id A form ID, registered via hook_pseudo_login_form_info().
+ */
+function pseudo_login_attach_form_validate(&$form, &$form_state, $form_id = NULL) {
+  if (empty($form_id)) {
+    $form_id = $form['#form_id'];
+  }
+  
+  // Lookup the form definition
+  if (!empty($form_id)) {
+    $info = pseudo_login_form_info($form_id);
+  }
+  if (!$info) {
+    return;
+  }
+  
+  // Get the current user, so we can modify their contact information.
+  $account = $form_state['user'];
+    
+  // Validate any user fields
+  field_attach_form_validate('user', $account, $form['pseudo_login'], $form_state);
+  
+  foreach ($info['fields'] as $field_id => $field_name) {
+    if (isset($form['pseudo_login'][$field_id])) {
+      $element = $form['pseudo_login'][$field_id];
+      $field = $element['#field_info'];
+      
+      $values = $form_state['values']['pseudo_login'][$field_id];
+      
+      $callback = module_info_get_callback($field, 'form_validate');
+      if ($callback) {
+        $values = $callback($field, $element, $form_state, $account, $values);
+        form_set_value($element, $values, $form_state);
+      }
+    }
+  }
+  
+  // Place the user into the form state.
+  $form_state['user'] = $account;
+}
+
+/**
+ * Attaches the configured user fields to the given form.
+ * 
+ * If the user is only pseudo logged in, options will be made available to 
+ * login for real.
+ * 
+ * @param array $form
+ * @param array $form_state
+ * @param string $form_id A form ID, registered via hook_pseudo_login_form_info().
+ */
+function pseudo_login_attach_form_submit(&$form, &$form_state, $form_id = NULL) {
+  $account = $form_state['user'];
+  $is_new = !empty($account->is_new);
+  
+  // When the form is submitted, save the user account.
+  if ($is_new) {
+    // For new users, the password should be hashed appropriately
+    user_save($account, array('pass' => $account->pass));
+  }
+  else {
+    user_save($account);
+  }
+  $form_state['user'] = $account;
+  
+  // If an admin posts as a different user, do not do a login for them.
+  if (!user_access('post as another user')) {
+  
+    // If the user is new, do a pseudo login for them.
+    if (variable_get('donations_pseudo_login_new_user', TRUE) && $is_new) {
+      pseudo_login_set_cookie($account);
+    }
+    
+    // Otherwise, if the user is not logged in do a pseudo login for them.
+    if ($GLOBALS['user']->uid != $account->uid && empty($GLOBALS['pseudo_uid'])) {
+      pseudo_login_set_cookie($account);
+    }
+  }
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function pseudo_login_form_alter(&$form, &$form_state, $form_id) {
+  switch ($form_id) {
+    case 'user_login':
+      $form['name']['#description'] = t('You may login with either your assigned username or your e-mail address.');
+      // Fall through...
+      
+    case 'user_login_block':
+    case 'profile_login_block':
+      // Ensure a valid validate array.
+      $form += array('#validate' => array());
+      
+      // LT's validation function must run first.
+      array_unshift($form['#validate'], 'pseudo_login_user_login_validate');
+
+      $form['name']['#title'] = t('Username or e-mail');
+      $form['actions']['submit']['#value'] = t('Login');
+  }
+}
+
+/**
+ * Custom validation for user login form, to allow signin by username or email.
+ *
+ * This functionality was copied from the logintoboggan module.
+ */
+function pseudo_login_user_login_validate($form, &$form_state) {
+  if (isset($form_state['values']['name']) && $form_state['values']['name']) {
+    if ($name = db_query("SELECT name FROM {users} WHERE LOWER(mail) = LOWER(:name)", array(
+      ':name' => $form_state['values']['name'],
+    ))->fetchField()) {
+      form_set_value($form['name'], $name, $form_state);
+    }
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function pseudo_login_form_user_register_form_alter(&$form, &$form_state) {
+  // add custom validation function
+  $form['#validate'][] = 'pseudo_login_user_validate';
+}
+
+/**
+ * Custom validation function for user edit form. Need to make sure that name
+ * and email are unique since we are allowing login with email.
+ *
+ * This functionality was copied from the logintoboggan module.
+ */
+function pseudo_login_user_validate($form, &$form_state) {
+  $account = $form['#user'];
+  $edit = $form_state['values'];
+
+  $uid = isset($account->uid) ? $account->uid : 0;
+  // Check that no user is using this name for their email address.
+  if (isset($edit['name']) && db_query("SELECT uid FROM {users} WHERE LOWER(mail) = LOWER(:mail) AND uid <> :uid", array(
+    ':mail' => $edit['name'],
+    ':uid' => $uid,
+  ))->fetchField()) {
+    form_set_error('name', t('This name has already been taken by another user.'));
+  }
+  // Check that no user is using this email address for their name.
+  if (isset($edit['mail']) && db_query("SELECT uid FROM {users} WHERE LOWER(name) = LOWER(:name) AND uid <> :uid", array(
+    ':name' => $edit['mail'],
+    ':uid' => $uid,
+  ))->fetchField()) {
+    form_set_error('mail', t('This e-mail has already been taken by another user.'));
+  }
+}

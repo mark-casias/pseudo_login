@@ -1,0 +1,13 @@
+.pseudo-login-email-wrapper .form-item-pseudo-login-email-pass,
+.pseudo-login-email-wrapper input.form-submit {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.pseudo-login-email-wrapper .email-readonly {
+  font-size: 1.1em;
+}
+
+.pseudo-login-email-wrapper .description {
+  font-style: italic;
+}

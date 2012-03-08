@@ -1,0 +1,42 @@
+<?php
+/**
+ * Implements hook_schema().
+ */
+function pseudo_login_schema() {
+  $schema = array();
+  
+  $schema['users_tokens'] = array(
+    'fields' => array(
+      'uid' => array(
+        'description' => t('The uid from the {users} table.'),
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'token' => array(
+        'description' => t('The unique token for this user.'),
+        'type' => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+      ),
+      'created' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+      ),
+    ),
+    'primary key' => array( 'uid' ),
+    'unique keys' => array(
+      'token' => array( 'token', 'uid' ),
+    ),
+    'foreign keys' => array(
+      'user' => array(
+        'table' => 'users',
+        'columns' => array(
+          'uid' => 'uid',
+        ),
+      ),
+    ),
+  );
+  
+  return $schema;
+}
