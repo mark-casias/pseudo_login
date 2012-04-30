@@ -36,13 +36,19 @@ function pseudo_login_menu() {
   $items = array();
   
   $items['admin/config/people/pseudo'] = array(
-    'title' => 'Pseudo-Login Forms',
+    'title' => 'Pseudo-Login',
     'access arguments' => array( 'configure pseudo-login forms' ),   
     'page callback' => 'drupal_get_form',
     'page arguments' => array('pseudo_login_config_form'),
     'file' => 'pseudo_login.admin.inc',
     'type' => MENU_NORMAL_ITEM,
     'weight' => 20,
+  );
+  
+  $items['admin/config/people/pseudo/forms'] = array(
+    'title' => 'Forms',
+    'weight' => 0,
+    'type' => MENU_DEFAULT_LOCAL_TASK,
   );
   
   $items['user/logout/pseudo'] = array(
@@ -52,9 +58,32 @@ function pseudo_login_menu() {
     'type' => MENU_CALLBACK,
   );
   
+  $items['signup'] = array(
+    'title' => 'Receive Email Updates',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('pseudo_login_signup_page_form'),
+    'file' => 'pseudo_login.forms.inc',
+    'access callback' => TRUE,
+    'type' => MENU_NORMAL_ITEM,
+  );
+  
+  $items['signup/view'] = array(
+    'title' => 'View',
+    'access callback' => TRUE,
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => 0,
+  );
+  $items['signup/edit'] = array(
+    'title' => 'Edit',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('pseudo_login_signup_page_edit_form'),
+    'file' => 'pseudo_login.forms.inc',
+    'access arguments' => array('configure pseudo-login forms'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 10,
+  );
   return $items;
 }
-
 
 /**
  * Implements hook_boot().
@@ -134,6 +163,17 @@ function pseudo_login_boot() {
     }
     
     pseudo_login_unset_cookie();
+  }
+}
+
+/**
+ * If the user is not already logged in, log them in through pseudo tokens.
+ * 
+ * @param object $account The user account to login.
+ */
+function pseudo_login($account) {
+  if (!empty($account->uid) && $GLOBALS['user']->uid != $account->uid && empty($GLOBALS['pseudo_uid'])) {
+    pseudo_login_set_cookie($account);
   }
 }
 
@@ -279,6 +319,21 @@ function pseudo_login_generate_token($uid) {
   return $token;
 }
 
+function pseudo_login_entity_property_get($data, array $options, $name) {
+  if ($name == 'source' && isset($data->data)) {
+    if (is_string($data->data)) {
+      $data = unserialize($data->data);
+    }
+    else {
+      $data = $data->data;
+    }
+    if (isset($data['source'])) {
+      return $data['source'];
+    }
+  }
+  return '';
+}
+
 /**
  * Implements hook_cron().
  * 
@@ -325,6 +380,7 @@ function pseudo_login_form_info($key = NULL) {
       'fieldset_title' => t('User Information'),
       'fields' => array(),
       'required' => array(),
+      'source' => '',
     ));
   
     // Now merge in the values from the database
@@ -332,6 +388,9 @@ function pseudo_login_form_info($key = NULL) {
       $db = variable_get("pseudo_login_form_{$form_id}", array( 'fields' => array() ));
       $info[$form_id] = $db + $data;
       $info[$form_id]['fields'] = array_merge($data['fields'], $db['fields']);
+      
+      // The value of the add field gets stored in the admin form, so remove it.
+      unset($info[$form_id]['add']);
     }
   }
   
@@ -382,16 +441,22 @@ function pseudo_login_hook_info() {
  * login for real.
  * 
  * @param array $form
+ *   The form array, created in drupal_get_form().
  * @param array $form_state
- * @param string $form_id A form ID, registered via hook_pseudo_login_form_info().
+ *   The form state array.
+ * @param string $form_id 
+ *   A form ID, registered via hook_pseudo_login_form_info().
+ * @param array $options
+ *   Additional options to pass to this form. These values and keys directly
+ *   overrides those defined by the corresponding pseudo_login_form_info() hook.
  */
-function pseudo_login_attach_form(&$form, &$form_state, $form_id) {
+function pseudo_login_attach_form(&$form, &$form_state, $form_id, $options = array()) {
   // Any page that attaches these fields should not be cacheable.
   // This prevents the form values from being cached.
   drupal_page_is_cacheable(FALSE);
   
   // Lookup the form definition
-  $info = pseudo_login_form_info($form_id);
+  $info = $options + pseudo_login_form_info($form_id);
   if (!$info) {
     return;
   }
@@ -403,7 +468,9 @@ function pseudo_login_attach_form(&$form, &$form_state, $form_id) {
   else {
     $account = pseudo_login_get_user();
   }
+  
   $form_state['user'] = $account;
+  $form_state['pseudo_login_options'] = $options;
   
   $form['pseudo_login'] = array(
     '#type' => 'fieldset',
@@ -459,10 +526,11 @@ function pseudo_login_attach_form_validate(&$form, &$form_state, $form_id = NULL
   if (empty($form_id)) {
     $form_id = $form['#form_id'];
   }
+  $options = $form_state['pseudo_login_options'];
   
   // Lookup the form definition
   if (!empty($form_id)) {
-    $info = pseudo_login_form_info($form_id);
+    $info = $options + pseudo_login_form_info($form_id);
   }
   if (!$info) {
     return;
@@ -504,17 +572,58 @@ function pseudo_login_attach_form_validate(&$form, &$form_state, $form_id = NULL
  * @param string $form_id A form ID, registered via hook_pseudo_login_form_info().
  */
 function pseudo_login_attach_form_submit(&$form, &$form_state, $form_id = NULL) {
+  if (empty($form_id)) {
+    $form_id = $form['#form_id'];
+  }
+  $options = $form_state['pseudo_login_options'];
+  
+  // Lookup the form definition
+  if (!empty($form_id)) {
+    $info = $options + pseudo_login_form_info($form_id);
+  }
+  if (!$info) {
+    return;
+  }
+  
   $account = $form_state['user'];
   $is_new = !empty($account->is_new);
+  $edit = array();
   
   // When the form is submitted, save the user account.
   if ($is_new) {
+    
+    // Attach a source to the user record
+    $source = 'webform-' . $form_id;
+    if (!empty($info['source'])) {
+      $source = $info['source'];
+    }
+    $account->data['source'] = $source;
+    
     // For new users, the password should be hashed appropriately
-    user_save($account, array('pass' => $account->pass));
+    $edit = array(
+      'pass' => $account->pass,
+      'data' => array(
+        'source' => $source,
+      ),
+    );
   }
-  else {
-    user_save($account);
+      
+  foreach ($info['fields'] as $field_id => $field_name) {
+    if (isset($form['pseudo_login'][$field_id])) {
+      $element = $form['pseudo_login'][$field_id];
+      $field = $element['#field_info'];
+      
+      $values = $form_state['values']['pseudo_login'][$field_id];
+      
+      $callback = module_info_get_callback($field, 'form_submit');
+      if ($callback) {
+        $callback($field, $element, $form_state, $account, $values, $edit);
+      }
+    }
   }
+  
+  // Save the user account
+  user_save($account, $edit);
   $form_state['user'] = $account;
   
   // If an admin posts as a different user, do not do a login for them.
@@ -602,4 +711,27 @@ function pseudo_login_user_validate($form, &$form_state) {
   ))->fetchField()) {
     form_set_error('mail', t('This e-mail has already been taken by another user.'));
   }
+}
+
+/**
+ * Implements hook_pseudo_login_form_info().
+ */
+function pseudo_login_pseudo_login_form_info() {
+  return array(
+    'pseudo_login_signup_page_form' => array(
+      'title' => t('Signup Page'),
+      'fieldset_title' => t('User Information'),
+      'fields' => array(
+        'email' => 'mail',
+        'first_name' => 'field_user_first',
+        'last_name' => 'field_user_last',
+        'address' => 'field_user_address',
+        'list' => 'mc_list',
+      ),
+      'required' => array(
+        'email', 'first_name', 'last_name', 'address',
+      ),
+      'source' => 'webform-signup-page',
+    ),
+  );
 }

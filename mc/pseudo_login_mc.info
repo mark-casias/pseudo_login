@@ -1,0 +1,8 @@
+name = "Pseudo Login - Mailchimp"
+description = "Provides MailChimp list integration for pseudo-login forms"
+core = 7.x
+version = 7.1.x
+package = "Users"
+
+dependencies[] = pseudo_login
+dependencies[] = mailchimp_lists

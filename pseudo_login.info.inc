@@ -30,5 +30,11 @@ function pseudo_login_entity_property_info_alter(&$info) {
       'getter callback' => 'entity_property_verbatim_get',
       'setter callback' => 'entity_property_verbatim_set',
     );
+    $info['user']['properties']['source'] = array(
+      'label' => t('Source'),
+      'description' => t('The source of this user in the system'),
+      'type' => 'text',
+      'getter callback' => 'pseudo_login_entity_property_get',
+    );
   }
 }

@@ -1,0 +1,163 @@
+<?php
+/**
+ * @file 
+ * 
+ * Copyright 2012 New Signature
+ * http://www.newsignature.com
+ *
+ * @author Andrew Marcus
+ * @since Apr 24, 2012
+ */
+
+function pseudo_login_mc_menu() {
+  $items = array();
+  $items['admin/config/people/pseudo/mailchimp'] = array(
+    'title' => 'MailChimp',
+    'access arguments' => array( 'configure pseudo-login forms' ),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('pseudo_login_mc_config_form'),
+    'file' => 'pseudo_login_mc.admin.inc',
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 10,
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_block_info().
+ */
+function pseudo_login_mc_block_info() {
+  return array(
+    'signup' => array(
+      'info' => t('Pseudo-Login Signup Block'),
+      'cache' => DRUPAL_NO_CACHE,
+    ),
+  );
+}
+
+function pseudo_login_mc_block_configure($delta = '') {
+  switch($delta) {
+    case 'signup':
+      $form['redirect'] = array(
+        '#type' => 'textfield',
+        '#title' => t('On success, redirect to'),
+        '#description' => t('Enter the Drupal path or absolute path where you would like to redirect users after a successful signup. Leave blank to print the status message but remain on the current page.'),
+        '#default_value' => variable_get('pseudo_login_mc_signup_redirect', '<front>'),
+      );
+      return $form;
+  }
+  return array();
+}
+
+function pseudo_login_mc_block_save($delta = '', $edit = array()) {
+  switch ($delta) {
+    case 'signup':
+      variable_set('pseudo_login_mc_signup_redirect', $edit['redirect']);
+      break;
+  }
+}
+
+function pseudo_login_mc_block_view($delta = '') {
+  switch($delta) {
+    case 'signup':
+      module_load_include('inc', 'pseudo_login_mc', 'pseudo_login_mc.forms');
+      return array(
+        'subject' => t('Signup for our Newsletter'),
+        'content' => drupal_get_form('pseudo_login_mc_signup_form'),
+      );
+  }
+  return array();
+}
+
+function pseudo_login_mc_messages() {
+  $messages = &drupal_static(__FUNCTION__, FALSE);
+  if (!$messages) {
+    $messages = variable_get('pseudo_login_mc_messages', FALSE);
+  }
+  if (empty($messages)) {
+    $messages = array(
+      'subscribed' => 'You are already subscribed to our email list.',
+      'double_opt_in' => 'Thank you for subscribing to our email list!  An email will be sent to your address; click the link in the email to confirm your subscription.',
+      'new' => 'Thank you for subscribing to our email list!', 
+    );
+  }
+  return $messages;
+}
+
+
+/**
+ * Subscribes a user to a MailChimp list.
+ * 
+ * This basically repeats steps in the mailchimp module, but with our own customized messages.
+ * 
+ * @param object $account 
+ *   The user account to subscribe.
+ * @param object $list
+ *   The list to which to subscribe the user.  If not set, the first Optional list on
+ *   registration forms will be used, and this variable will be set to it.
+ * @param array $interests
+ *   If specified, this is an array of interests this user has within the list.
+ *   The keys are the IDs of the interest groups within MailChimp, and the values are
+ *   arrays of the names of the individual groups within the interest.
+ * @param boolean $show_messages
+ *   If true (default), status messages will be shown to indicate that the user is
+ *   already subscribed, or that they will be subscribed.
+ *   
+ * @return boolean
+ *   True if the user was already subscribed, false otherwise.
+ */
+function pseudo_login_mc_signup($account, &$list = FALSE, $interests = array(), $show_messages = TRUE) {
+  $ret = FALSE;
+  
+  // If a list was not specified, get the first list
+  if (!$list) {
+    // We need to force feed the authenticated role to this account object so the
+    // right newseletters are available
+    $a = clone($account);
+    $a->roles[DRUPAL_AUTHENTICATED_RID] = 'authenticated user';
+    
+    $lists = mailchimp_lists_get_available_lists($a,
+      MAILCHIMP_LISTTYPE_OPTIONAL, array('show_register_form' => 1));
+  
+    $list = reset($lists);
+  }
+  
+  if ($list) {
+    $mcapi = mailchimp_get_api_object();
+    $is_subscribed = mailchimp_is_subscribed($list->mc_list_id, $account->mail);
+
+    // Grab merge values
+    $mergevars = mailchimp_lists_load_user_mergevars($account, $list);
+    
+    // Include interest groups
+    if (!empty($interests)) {
+      $groupings = array();
+      foreach($interests as $key => $group) {
+        $groups = is_array($group) ? implode(',', array_filter($group)) : $group;
+        $groupings[] = array('id' => $key, 'groups' => $groups);
+      }
+      $mergevars['GROUPINGS'] = $groupings;
+    }
+    
+    if ($is_subscribed) {
+      $ret = mailchimp_update_user($list, $account->mail, $mergevars, FALSE, $mcapi);
+    }
+    else {
+      $ret = mailchimp_subscribe_user($list, $account->mail, $mergevars, FALSE, $mcapi);
+    }
+    
+    if ($show_messages) {
+      $messages = pseudo_login_mc_messages();
+      if ($is_subscribed) {
+        drupal_set_message($messages['subscribed']);
+      }
+      elseif (!empty($list->settings['doublein'])) {
+        drupal_set_message($messages['double_opt_in']);
+      }
+      else {
+        drupal_set_message($messages['new']);
+      }
+    }
+  }
+  return $is_subscribed;
+}

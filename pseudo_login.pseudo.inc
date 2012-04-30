@@ -16,20 +16,21 @@ function pseudo_login_pseudo_login_fields_info() {
   $info = array();
   
   $info['mail'] = array(
-    'type' => 'User',
-    'title' => 'Email',
+    'type' => t('User'),
+    'title' => t('Email'),
     'base' => 'pseudo_login_field_mail',
   );
   $info['mail_login'] = array(
-    'type' => 'User',
+    'type' => t('User'),
     'title' => 'Email with login form',
     'base' => 'pseudo_login_field_mail',
   );
   
+  // Add user fields
   $fields = field_info_instances('user', 'user');
   foreach ($fields as $field_name => $field) {
     $info[$field_name] = array(
-      'type' => 'User',
+      'type' => t('User'),
       'title' => $field['label'],
       'base' => 'pseudo_login_field_user_field',
       'entity' => 'user',
@@ -37,7 +38,6 @@ function pseudo_login_pseudo_login_fields_info() {
       'instance' => $field,
     );
   }
-  
   return $info;
 }
 
@@ -127,8 +127,10 @@ function pseudo_login_field_mail_form_validate($field, &$element, &$form_state, 
         'uid' => 0,
         'name' => $mail,
         'mail' => $mail,
-        'pass' => uniqid('p'), // Generate a hard-to-guess password
+        'init' => $mail,
+        'pass' => user_password(8), // Generate a hard-to-guess password
         'status' => 1,
+        'access' => REQUEST_TIME,
       );
     }
   }
