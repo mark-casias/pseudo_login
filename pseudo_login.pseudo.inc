@@ -1,12 +1,6 @@
 <?php
 /**
- * @file 
- * 
- * Copyright 2011 New Signature
- * http://www.newsignature.com
- *
- * @author Andrew Marcus
- * @since Aug 17, 2011
+ * @file
  */
 
 /**

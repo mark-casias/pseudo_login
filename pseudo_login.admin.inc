@@ -1,12 +1,6 @@
 <?php
 /**
- * @file 
- * 
- * Copyright 2011 New Signature
- * http://www.newsignature.com
- *
- * @author Andrew Marcus
- * @since Aug 16, 2011
+ * @file
  */
 
 function pseudo_login_config_form($form, &$form_state) {

@@ -62,7 +62,7 @@ function pseudo_login_mc_field_form($field, &$form_state, $account, $required = 
     $i = 0;
     foreach ($lists as $list) {
       mailchimp_lists_auth_newsletter_form($element, $list, $account);
-      $wrapper_key = 'mailchimp_' . $list->id;
+      $wrapper_key = 'mailchimp_' . $list->name;
       
       if (!$field['show_lists']) {
         // If this field should be hidden, don't display it
